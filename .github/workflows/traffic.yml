@@ -29,9 +29,10 @@ jobs:
     env:
       BURST_MIN: ${{ github.event.inputs.burst_min || '500' }}
       BURST_MAX: ${{ github.event.inputs.burst_max || '1000' }}
+      TRAFFIC_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - name: Continuous bursts (self-replacing job)
+      - name: Continuous bursts (self-perpetuating)
         run: |
           start=$(date +%s)
           i=0
@@ -39,6 +40,20 @@ jobs:
             i=$((i+1))
             echo "=== burst $i started $(date -u '+%H:%M:%SZ') ==="
             node generate.mjs || true
+            # Self-perpetuation: GitHub's cron scheduler is unreliable, so after
+            # each burst, if no successor run is queued/pending, dispatch one.
+            # This keeps traffic flowing indefinitely without manual action.
+            queued=$(curl -s -H "Authorization: Bearer $TRAFFIC_TOKEN" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?per_page=20" \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s);const n=(d.workflow_runs||[]).filter(r=>r.status==="queued"||r.status==="pending"||r.status==="waiting").length;console.log(n);}catch(e){console.log(0);}})')
+            echo "queued/pending runs: $queued"
+            if [ "$queued" = "0" ]; then
+              curl -s -o /dev/null -w "self-dispatch: %{http_code}\n" -X POST \
+                -H "Authorization: Bearer $TRAFFIC_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/traffic.yml/dispatches" \
+                -d '{"ref":"main"}'
+            fi
             sleep $((45 + RANDOM % 60))
           done
           echo "session complete after $i bursts"
