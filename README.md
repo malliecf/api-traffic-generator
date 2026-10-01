@@ -11,20 +11,29 @@ on GitHub Actions runners (public IPs outside Cloudflare), so every request
 enters the zone as genuine public traffic and shows up in zone dashboards and
 the Log Explorer.
 
-## What it does
+## How it runs (fully automatic)
 
-- GitHub Actions cron: two staggered schedules, every 5 minutes (00/05/10... and 02/07/12...)
-- Each run: one burst of 100–300 requests, randomized pacing (120–400 ms)
-- Endpoint mix: `GET /api/widgets` (~40%), `POST /api/widgets/1|2|3` (~20% each) with random widget JSON payloads
-- Every request is marked with `User-Agent: api-traffic-generator/1.0` and an `X-Synthetic-Traffic` header
+- Cron heartbeats: every minute (`* * * * *`, backup line at 2-59/5)
+- Each fire starts a job that bursts continuously for ~55 minutes, then the
+  next fire replaces it (concurrency: cancel-in-progress) — so traffic keeps
+  flowing even when GitHub's scheduler fires late
+- Bursts: 500–1000 requests each, 5 requests in parallel per tick
+  (a 1000-request burst completes in ~2 min instead of timing out)
+- Every request is marked with `User-Agent: api-traffic-generator/1.0` and an
+  `X-Synthetic-Traffic` header
+
+Manual: Actions → **traffic** → **Run workflow** (restarts the engine immediately,
+optionally with custom burst sizes).
 
 ## Tuning
 
-- Burst size / pacing: `BURST_MIN`, `BURST_MAX`, `INTERVAL_MIN`, `INTERVAL_MAX`, `TARGET_BASE` env vars in the workflow
-- Manual run: Actions → **traffic** → **Run workflow** (set burst sizes)
+- `BURST_MIN` / `BURST_MAX` per burst (workflow env), `BATCH_SIZE` parallelism
 - Pause: disable the **traffic** workflow in the Actions tab
 
 ## Notes
 
-- The repo is public so GitHub Actions minutes are free; the code contains no secrets.
-- Filter the zone Log Explorer by `User-Agent contains api-traffic-generator` to see exactly the generated requests.
+- Public repo so Actions minutes are free; code contains no secrets.
+- Sustained volume at defaults is roughly 5–10 req/s — lower `BURST_MAX` if the
+  backend should see less.
+- Filter the zone Log Explorer by `User-Agent contains api-traffic-generator`
+  to see exactly the generated requests.

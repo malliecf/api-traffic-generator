@@ -1,13 +1,15 @@
 // External synthetic traffic generator for the api123 widgets API.
 // Runs OUTSIDE Cloudflare (GitHub Actions runners), so requests arrive at the
 // zone edge from public IPs and show up in zone analytics + Log Explorer.
+// One invocation = one randomized burst (the workflow loops bursts).
 
 const BASE = process.env.TARGET_BASE || "https://api123.matthieuallie.net";
-const COUNT_MIN = parseInt(process.env.BURST_MIN || "100", 10);
-const COUNT_MAX = parseInt(process.env.BURST_MAX || "300", 10);
-const INTERVAL_MIN = parseInt(process.env.INTERVAL_MIN || "120", 10);
+const COUNT_MIN = parseInt(process.env.BURST_MIN || "500", 10);
+const COUNT_MAX = parseInt(process.env.BURST_MAX || "1000", 10);
+const BATCH = Math.max(1, parseInt(process.env.BATCH_SIZE || "5", 10));
+const INTERVAL_MIN = parseInt(process.env.INTERVAL_MIN || "200", 10);
 const INTERVAL_MAX = parseInt(process.env.INTERVAL_MAX || "400", 10);
-const MAX_DURATION_MS = parseInt(process.env.MAX_DURATION_MS || "90000", 10);
+const MAX_DURATION_MS = parseInt(process.env.MAX_DURATION_MS || "150000", 10);
 const UA = "api-traffic-generator/1.0 (github-actions)";
 
 const ENDPOINTS = [
@@ -43,48 +45,56 @@ function randomWidget() {
 }
 
 let count = rand(COUNT_MIN, COUNT_MAX);
-let interval = rand(INTERVAL_MIN, INTERVAL_MAX);
-if (count * interval > MAX_DURATION_MS) {
-  interval = Math.max(50, Math.floor(MAX_DURATION_MS / count));
-}
-
 const started = Date.now();
 const results = [];
+let truncated = false;
 
-for (let i = 0; i < count; i++) {
-  if (i > 0) await sleep(interval);
-  const ep = pickEndpoint();
-  const t0 = Date.now();
-  let status = 0;
-  let colo = "";
-  let error = null;
-  try {
-    const init = {
-      method: ep.method,
-      headers: {
-        "User-Agent": UA,
-        "X-Synthetic-Traffic": "api-traffic-generator",
-      },
-    };
-    if (ep.method === "POST") {
-      init.headers["Content-Type"] = "application/json";
-      init.body = JSON.stringify(randomWidget());
-    }
-    const res = await fetch(BASE + ep.path, init);
-    status = res.status;
-    const ray = res.headers.get("cf-ray") || "";
-    colo = ray.includes("-") ? ray.slice(ray.lastIndexOf("-") + 1) : "";
-    await res.arrayBuffer();
-  } catch (e) {
-    error = String(e && e.message ? e.message : e);
+while (results.length < count) {
+  if (results.length > 0) await sleep(rand(INTERVAL_MIN, INTERVAL_MAX));
+  if (Date.now() - started > MAX_DURATION_MS) {
+    truncated = true;
+    break;
   }
-  results.push({
-    endpoint: ep.method + " " + ep.path,
-    status,
-    colo,
-    ms: Date.now() - t0,
-    error,
-  });
+  const batch = Math.min(BATCH, count - results.length);
+  const picks = Array.from({ length: batch }, () => pickEndpoint());
+  const settled = await Promise.allSettled(
+    picks.map(async (ep) => {
+      const t0 = Date.now();
+      let status = 0;
+      let colo = "";
+      let error = null;
+      try {
+        const init = {
+          method: ep.method,
+          headers: {
+            "User-Agent": UA,
+            "X-Synthetic-Traffic": "api-traffic-generator",
+          },
+        };
+        if (ep.method === "POST") {
+          init.headers["Content-Type"] = "application/json";
+          init.body = JSON.stringify(randomWidget());
+        }
+        const res = await fetch(BASE + ep.path, init);
+        status = res.status;
+        const ray = res.headers.get("cf-ray") || "";
+        colo = ray.includes("-") ? ray.slice(ray.lastIndexOf("-") + 1) : "";
+        await res.arrayBuffer();
+      } catch (e) {
+        error = String(e && e.message ? e.message : e);
+      }
+      return {
+        endpoint: ep.method + " " + ep.path,
+        status,
+        colo,
+        ms: Date.now() - t0,
+        error,
+      };
+    })
+  );
+  for (const s of settled) {
+    if (s.status === "fulfilled") results.push(s.value);
+  }
 }
 
 const durationMs = Date.now() - started;
@@ -98,10 +108,12 @@ for (const r of results) {
 }
 
 console.log(JSON.stringify({
-  burst: { requested: count, sent: results.length, intervalMs: interval, durationMs },
+  burst: { requested: count, sent: results.length, batchSize: BATCH, durationMs },
   ok: results.filter((r) => r.status >= 200 && r.status < 300).length,
   byEndpoint,
   byStatus,
+  effectiveRps: durationMs > 0 ? Math.round((results.length / durationMs) * 10000) / 10 : 0,
+  truncated,
   entryColos: [...colos].sort(),
   target: BASE,
 }, null, 2));

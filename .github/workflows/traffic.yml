@@ -16,18 +16,29 @@ on:
 permissions:
   contents: read
 
+# Each new run replaces the previous one, so traffic continues seamlessly
+# even when GitHub's cron scheduler fires late.
 concurrency:
   group: traffic-burst
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  burst:
+  bursts:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 60
     env:
-      BURST_MIN: ${{ github.event.inputs.burst_min || '100' }}
-      BURST_MAX: ${{ github.event.inputs.burst_max || '300' }}
+      BURST_MIN: ${{ github.event.inputs.burst_min || '500' }}
+      BURST_MAX: ${{ github.event.inputs.burst_max || '1000' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Run burst
-        run: node generate.mjs
+      - name: Continuous bursts (self-replacing job)
+        run: |
+          start=$(date +%s)
+          i=0
+          while [ $(( $(date +%s) - start )) -lt 3300 ]; do
+            i=$((i+1))
+            echo "=== burst $i started $(date -u '+%H:%M:%SZ') ==="
+            node generate.mjs || true
+            sleep $((45 + RANDOM % 60))
+          done
+          echo "session complete after $i bursts"
