@@ -12,6 +12,14 @@ const INTERVAL_MAX = parseInt(process.env.INTERVAL_MAX || "400", 10);
 const MAX_DURATION_MS = parseInt(process.env.MAX_DURATION_MS || "150000", 10);
 const UA = "api-traffic-generator/1.0 (github-actions)";
 
+function apiCookie() {
+  const d = new Date();
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = String(d.getFullYear()).slice(-2);
+  return "api123=" + dd + "/" + mm + "/" + yy;
+}
+
 const ENDPOINTS = [
   { path: "/api/widgets", method: "GET", weight: 4 },
   { path: "/api/widgets/1", method: "POST", weight: 2 },
@@ -69,6 +77,7 @@ while (results.length < count) {
           headers: {
             "User-Agent": UA,
             "X-Synthetic-Traffic": "api-traffic-generator",
+            Cookie: apiCookie(),
           },
         };
         if (ep.method === "POST") {
